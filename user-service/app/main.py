@@ -1,4 +1,4 @@
-# Week 08 CI/CD pipeline trigger test
+# Week 08 CI/CD pipeline trigger test - Actions enabled
 import logging
 import os
 import time
