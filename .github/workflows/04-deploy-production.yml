@@ -38,6 +38,35 @@ jobs:
           cluster-name: ${{ vars.AKS_CLUSTER_NAME }}
           admin: 'true'
 
+      # ---------------------------------------------------------
+      # Prometheus and Grafana Monitoring
+      # ---------------------------------------------------------
+
+      - name: Setup Helm
+        uses: azure/setup-helm@v4
+
+      - name: Add Prometheus Helm repository
+        run: |
+          helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+          helm repo update
+
+      - name: Deploy Prometheus and Grafana
+        run: |
+          kubectl create namespace monitoring --dry-run=client -o yaml | kubectl apply -f -
+          helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheus-stack \
+            --namespace monitoring \
+            --wait \
+            --timeout 10m
+
+      - name: Verify monitoring stack
+        run: |
+          kubectl get pods -n monitoring
+          kubectl get services -n monitoring
+
+      # ---------------------------------------------------------
+      # Production Deployment
+      # ---------------------------------------------------------
+
       - name: Create production namespace
         run: kubectl create namespace production --dry-run=client -o yaml | kubectl apply -f -
 
