@@ -8,6 +8,12 @@ on:
         required: true
         default: "7e1ecfd1bb115079cd54f6de018fc8950faa8c0c"
 
+      test_failure:
+        description: "Demo failure scenario - deliberately fail pre-cutover smoke test"
+        required: true
+        type: boolean
+        default: false
+
 jobs:
   blue-green:
     name: Blue Green Deployment
@@ -33,7 +39,7 @@ jobs:
           admin: 'true'
 
       # ---------------------------------------------------------
-      # Identify the currently active production slot
+      # Identify active production slot and inactive target slot
       # ---------------------------------------------------------
 
       - name: Detect active and target slots
@@ -57,8 +63,7 @@ jobs:
           echo "Candidate deployment slot: $TARGET_SLOT"
 
       # ---------------------------------------------------------
-      # Create candidate deployment from the working production
-      # deployment configuration
+      # Prepare inactive candidate deployment
       # ---------------------------------------------------------
 
       - name: Prepare candidate deployment
@@ -69,7 +74,7 @@ jobs:
           IMAGE="${{ vars.ACR_LOGIN_SERVER }}/koalatech-user-service:${{ inputs.image_tag }}"
 
           if [ "$ACTIVE" = "blue" ]; then
-            SOURCE_DEPLOYMENT="user-service"
+            SOURCE_DEPLOYMENT="user-service-blue"
           else
             SOURCE_DEPLOYMENT="user-service-green"
           fi
@@ -79,7 +84,8 @@ jobs:
           echo "Candidate image: $IMAGE"
 
           kubectl get deployment "$SOURCE_DEPLOYMENT" \
-            -n production -o json |
+            -n production \
+            -o json |
           jq \
             --arg name "user-service-$TARGET" \
             --arg slot "$TARGET" \
@@ -102,7 +108,7 @@ jobs:
           kubectl apply -f -
 
       # ---------------------------------------------------------
-      # Wait for candidate without touching production traffic
+      # Wait for candidate while production stays on active slot
       # ---------------------------------------------------------
 
       - name: Wait for candidate rollout
@@ -116,7 +122,7 @@ jobs:
             --timeout=180s
 
       # ---------------------------------------------------------
-      # Create isolated preview service
+      # Create isolated preview service for candidate
       # ---------------------------------------------------------
 
       - name: Create candidate preview service
@@ -138,8 +144,8 @@ jobs:
           echo "Preview service targets slot: $TARGET"
 
       # ---------------------------------------------------------
-      # PRE-CUTOVER GATE
-      # Failure here prevents production traffic from moving
+      # PRE-CUTOVER SMOKE TEST GATE
+      # Failure here prevents production traffic from switching
       # ---------------------------------------------------------
 
       - name: Smoke test candidate before cutover
@@ -148,6 +154,15 @@ jobs:
           TARGET="${{ steps.slots.outputs.target }}"
 
           echo "Smoke testing candidate slot: $TARGET"
+
+          if [ "${{ inputs.test_failure }}" = "true" ]; then
+            TEST_URL="http://user-service-preview:8000/intentional-failure"
+            echo "DEMO FAILURE MODE ENABLED"
+            echo "Using intentionally invalid health endpoint: $TEST_URL"
+          else
+            TEST_URL="http://user-service-preview:8000/"
+            echo "Normal deployment mode"
+          fi
 
           kubectl run blue-green-smoke-test \
             --rm \
@@ -159,12 +174,13 @@ jobs:
             curl --fail \
                  --retry 5 \
                  --retry-delay 3 \
-                 http://user-service-preview:8000/
+                 "$TEST_URL"
 
           echo "PRE-CUTOVER SMOKE TEST PASSED"
 
       # ---------------------------------------------------------
-      # Atomic traffic cutover
+      # Production traffic cutover
+      # Runs only if pre-cutover smoke test succeeds
       # ---------------------------------------------------------
 
       - name: Switch production traffic
@@ -187,7 +203,8 @@ jobs:
           echo
 
       # ---------------------------------------------------------
-      # POST-CUTOVER VALIDATION + AUTOMATIC ROLLBACK
+      # POST-CUTOVER VALIDATION
+      # Roll back to previous slot if production validation fails
       # ---------------------------------------------------------
 
       - name: Validate production and rollback on failure
@@ -225,7 +242,7 @@ jobs:
           fi
 
       # ---------------------------------------------------------
-      # Evidence
+      # Evidence - runs even if an earlier step fails
       # ---------------------------------------------------------
 
       - name: Show blue green deployment evidence
