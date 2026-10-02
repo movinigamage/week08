@@ -1,0 +1,251 @@
+name: 05 - Blue Green User Service
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "ACR image tag to deploy"
+        required: true
+        default: "7e1ecfd1bb115079cd54f6de018fc8950faa8c0c"
+
+jobs:
+  blue-green:
+    name: Blue Green Deployment
+    runs-on: ubuntu-latest
+
+    environment:
+      name: production
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Login to Azure
+        uses: azure/login@v3
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Get AKS credentials
+        uses: azure/aks-set-context@v5
+        with:
+          resource-group: ${{ vars.AKS_RESOURCE_GROUP }}
+          cluster-name: ${{ vars.AKS_CLUSTER_NAME }}
+          admin: 'true'
+
+      # ---------------------------------------------------------
+      # Identify the currently active production slot
+      # ---------------------------------------------------------
+
+      - name: Detect active and target slots
+        id: slots
+        shell: bash
+        run: |
+          ACTIVE_SLOT=$(kubectl get service user-service \
+            -n production \
+            -o jsonpath='{.spec.selector.slot}')
+
+          if [ "$ACTIVE_SLOT" = "blue" ]; then
+            TARGET_SLOT="green"
+          else
+            TARGET_SLOT="blue"
+          fi
+
+          echo "active=$ACTIVE_SLOT" >> "$GITHUB_OUTPUT"
+          echo "target=$TARGET_SLOT" >> "$GITHUB_OUTPUT"
+
+          echo "Current production slot: $ACTIVE_SLOT"
+          echo "Candidate deployment slot: $TARGET_SLOT"
+
+      # ---------------------------------------------------------
+      # Create candidate deployment from the working production
+      # deployment configuration
+      # ---------------------------------------------------------
+
+      - name: Prepare candidate deployment
+        shell: bash
+        run: |
+          ACTIVE="${{ steps.slots.outputs.active }}"
+          TARGET="${{ steps.slots.outputs.target }}"
+          IMAGE="${{ vars.ACR_LOGIN_SERVER }}/koalatech-user-service:${{ inputs.image_tag }}"
+
+          if [ "$ACTIVE" = "blue" ]; then
+            SOURCE_DEPLOYMENT="user-service"
+          else
+            SOURCE_DEPLOYMENT="user-service-green"
+          fi
+
+          echo "Cloning configuration from $SOURCE_DEPLOYMENT"
+          echo "Candidate slot: $TARGET"
+          echo "Candidate image: $IMAGE"
+
+          kubectl get deployment "$SOURCE_DEPLOYMENT" \
+            -n production -o json |
+          jq \
+            --arg name "user-service-$TARGET" \
+            --arg slot "$TARGET" \
+            --arg image "$IMAGE" \
+            '
+            del(
+              .metadata.uid,
+              .metadata.resourceVersion,
+              .metadata.generation,
+              .metadata.creationTimestamp,
+              .metadata.managedFields,
+              .status
+            )
+            | .metadata.name = $name
+            | .metadata.labels.slot = $slot
+            | .spec.selector.matchLabels.slot = $slot
+            | .spec.template.metadata.labels.slot = $slot
+            | .spec.template.spec.containers[0].image = $image
+            ' |
+          kubectl apply -f -
+
+      # ---------------------------------------------------------
+      # Wait for candidate without touching production traffic
+      # ---------------------------------------------------------
+
+      - name: Wait for candidate rollout
+        shell: bash
+        run: |
+          TARGET="${{ steps.slots.outputs.target }}"
+
+          kubectl rollout status \
+            deployment/user-service-$TARGET \
+            -n production \
+            --timeout=180s
+
+      # ---------------------------------------------------------
+      # Create isolated preview service
+      # ---------------------------------------------------------
+
+      - name: Create candidate preview service
+        shell: bash
+        run: |
+          TARGET="${{ steps.slots.outputs.target }}"
+
+          kubectl create service clusterip user-service-preview \
+            --tcp=8000:8000 \
+            -n production \
+            --dry-run=client \
+            -o yaml |
+          kubectl apply -f -
+
+          kubectl patch service user-service-preview \
+            -n production \
+            -p "{\"spec\":{\"selector\":{\"app\":\"user-service\",\"slot\":\"$TARGET\"}}}"
+
+          echo "Preview service targets slot: $TARGET"
+
+      # ---------------------------------------------------------
+      # PRE-CUTOVER GATE
+      # Failure here prevents production traffic from moving
+      # ---------------------------------------------------------
+
+      - name: Smoke test candidate before cutover
+        shell: bash
+        run: |
+          TARGET="${{ steps.slots.outputs.target }}"
+
+          echo "Smoke testing candidate slot: $TARGET"
+
+          kubectl run blue-green-smoke-test \
+            --rm \
+            -i \
+            --restart=Never \
+            --image=curlimages/curl:8.12.1 \
+            -n production \
+            -- \
+            curl --fail \
+                 --retry 5 \
+                 --retry-delay 3 \
+                 http://user-service-preview:8000/
+
+          echo "PRE-CUTOVER SMOKE TEST PASSED"
+
+      # ---------------------------------------------------------
+      # Atomic traffic cutover
+      # ---------------------------------------------------------
+
+      - name: Switch production traffic
+        shell: bash
+        run: |
+          ACTIVE="${{ steps.slots.outputs.active }}"
+          TARGET="${{ steps.slots.outputs.target }}"
+
+          echo "Switching production traffic: $ACTIVE -> $TARGET"
+
+          kubectl patch service user-service \
+            -n production \
+            -p "{\"spec\":{\"selector\":{\"app\":\"user-service\",\"slot\":\"$TARGET\"}}}"
+
+          echo "Production selector:"
+          kubectl get service user-service \
+            -n production \
+            -o jsonpath='{.spec.selector}'
+
+          echo
+
+      # ---------------------------------------------------------
+      # POST-CUTOVER VALIDATION + AUTOMATIC ROLLBACK
+      # ---------------------------------------------------------
+
+      - name: Validate production and rollback on failure
+        shell: bash
+        run: |
+          ACTIVE="${{ steps.slots.outputs.active }}"
+          TARGET="${{ steps.slots.outputs.target }}"
+
+          echo "Testing production after cutover to $TARGET"
+
+          if kubectl run blue-green-production-test \
+            --rm \
+            -i \
+            --restart=Never \
+            --image=curlimages/curl:8.12.1 \
+            -n production \
+            -- \
+            curl --fail \
+                 --retry 5 \
+                 --retry-delay 3 \
+                 http://user-service:8000/
+          then
+            echo "POST-CUTOVER TEST PASSED"
+            echo "Production remains on $TARGET"
+          else
+            echo "POST-CUTOVER TEST FAILED"
+            echo "ROLLBACK: switching production back to $ACTIVE"
+
+            kubectl patch service user-service \
+              -n production \
+              -p "{\"spec\":{\"selector\":{\"app\":\"user-service\",\"slot\":\"$ACTIVE\"}}}"
+
+            echo "Rollback completed."
+            exit 1
+          fi
+
+      # ---------------------------------------------------------
+      # Evidence
+      # ---------------------------------------------------------
+
+      - name: Show blue green deployment evidence
+        if: always()
+        shell: bash
+        run: |
+          echo "===== USER SERVICE DEPLOYMENTS ====="
+          kubectl get deployments -n production | grep user-service || true
+
+          echo
+          echo "===== BLUE/GREEN PODS ====="
+          kubectl get pods \
+            -n production \
+            -l app=user-service \
+            --show-labels
+
+          echo
+          echo "===== PRODUCTION SERVICE SELECTOR ====="
+          kubectl get service user-service \
+            -n production \
+            -o jsonpath='{.spec.selector}'
+
+          echo
