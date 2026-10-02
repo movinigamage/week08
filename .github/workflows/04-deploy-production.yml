@@ -21,10 +21,18 @@ jobs:
       name: production
 
     steps:
+      # ---------------------------------------------------------
+      # Checkout
+      # ---------------------------------------------------------
+
       - name: Checkout tested commit
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
+
+      # ---------------------------------------------------------
+      # Azure and AKS
+      # ---------------------------------------------------------
 
       - name: Login to Azure
         uses: azure/login@v3
@@ -53,22 +61,30 @@ jobs:
       - name: Deploy Prometheus and Grafana
         run: |
           kubectl create namespace monitoring --dry-run=client -o yaml | kubectl apply -f -
-          helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheus-stack \
+
+          helm upgrade --install kube-prometheus-stack \
+            prometheus-community/kube-prometheus-stack \
             --namespace monitoring \
             --wait \
             --timeout 10m
 
       - name: Verify monitoring stack
         run: |
+          echo "Monitoring pods:"
           kubectl get pods -n monitoring
+
+          echo "Monitoring services:"
           kubectl get services -n monitoring
 
       # ---------------------------------------------------------
-      # Production Deployment
+      # Production Namespace and Secrets
       # ---------------------------------------------------------
 
       - name: Create production namespace
-        run: kubectl create namespace production --dry-run=client -o yaml | kubectl apply -f -
+        run: |
+          kubectl create namespace production \
+            --dry-run=client \
+            -o yaml | kubectl apply -f -
 
       - name: Create PostgreSQL secret
         run: >
@@ -93,47 +109,113 @@ jobs:
           --dry-run=client
           -o yaml | kubectl apply -f -
 
+      # ---------------------------------------------------------
+      # Deploy Application
+      # ---------------------------------------------------------
+
       - name: Apply Kubernetes manifests
-        run: kubectl apply -f kubernetes/production/
+        run: |
+          kubectl apply -f kubernetes/production/
+
+      # ---------------------------------------------------------
+      # Update Application Images
+      # ---------------------------------------------------------
 
       - name: Update frontend image
-        run: kubectl set image deployment/frontend frontend="${{ vars.ACR_LOGIN_SERVER }}/koalatech-frontend:${{ github.event.workflow_run.head_sha }}" -n production
+        run: |
+          kubectl set image deployment/frontend \
+            frontend="${{ vars.ACR_LOGIN_SERVER }}/koalatech-frontend:${{ github.event.workflow_run.head_sha }}" \
+            -n production
 
       - name: Update user-service image
-        run: kubectl set image deployment/user-service user-service="${{ vars.ACR_LOGIN_SERVER }}/koalatech-user-service:${{ github.event.workflow_run.head_sha }}" -n production
+        run: |
+          kubectl set image deployment/user-service \
+            user-service="${{ vars.ACR_LOGIN_SERVER }}/koalatech-user-service:${{ github.event.workflow_run.head_sha }}" \
+            -n production
 
       - name: Update student-service image
-        run: kubectl set image deployment/student-service student-service="${{ vars.ACR_LOGIN_SERVER }}/koalatech-student-service:${{ github.event.workflow_run.head_sha }}" -n production
+        run: |
+          kubectl set image deployment/student-service \
+            student-service="${{ vars.ACR_LOGIN_SERVER }}/koalatech-student-service:${{ github.event.workflow_run.head_sha }}" \
+            -n production
 
       - name: Update lecturer-service image
-        run: kubectl set image deployment/lecturer-service lecturer-service="${{ vars.ACR_LOGIN_SERVER }}/koalatech-lecturer-service:${{ github.event.workflow_run.head_sha }}" -n production
+        run: |
+          kubectl set image deployment/lecturer-service \
+            lecturer-service="${{ vars.ACR_LOGIN_SERVER }}/koalatech-lecturer-service:${{ github.event.workflow_run.head_sha }}" \
+            -n production
 
       - name: Update course-service image
-        run: kubectl set image deployment/course-service course-service="${{ vars.ACR_LOGIN_SERVER }}/koalatech-course-service:${{ github.event.workflow_run.head_sha }}" -n production
+        run: |
+          kubectl set image deployment/course-service \
+            course-service="${{ vars.ACR_LOGIN_SERVER }}/koalatech-course-service:${{ github.event.workflow_run.head_sha }}" \
+            -n production
 
       - name: Update enrollment-service image
-        run: kubectl set image deployment/enrollment-service enrollment-service="${{ vars.ACR_LOGIN_SERVER }}/koalatech-enrollment-service:${{ github.event.workflow_run.head_sha }}" -n production
+        run: |
+          kubectl set image deployment/enrollment-service \
+            enrollment-service="${{ vars.ACR_LOGIN_SERVER }}/koalatech-enrollment-service:${{ github.event.workflow_run.head_sha }}" \
+            -n production
+
+      # ---------------------------------------------------------
+      # Verify Application Rollouts
+      # ---------------------------------------------------------
 
       - name: Wait for frontend rollout
-        run: kubectl rollout status deployment/frontend -n production --timeout=300s
+        run: |
+          kubectl rollout status deployment/frontend \
+            -n production \
+            --timeout=300s
 
       - name: Wait for user-service rollout
-        run: kubectl rollout status deployment/user-service -n production --timeout=300s
+        run: |
+          kubectl rollout status deployment/user-service \
+            -n production \
+            --timeout=300s
 
       - name: Wait for student-service rollout
-        run: kubectl rollout status deployment/student-service -n production --timeout=300s
+        run: |
+          kubectl rollout status deployment/student-service \
+            -n production \
+            --timeout=300s
 
       - name: Wait for lecturer-service rollout
-        run: kubectl rollout status deployment/lecturer-service -n production --timeout=300s
+        run: |
+          kubectl rollout status deployment/lecturer-service \
+            -n production \
+            --timeout=300s
 
       - name: Wait for course-service rollout
-        run: kubectl rollout status deployment/course-service -n production --timeout=300s
+        run: |
+          kubectl rollout status deployment/course-service \
+            -n production \
+            --timeout=300s
 
       - name: Wait for enrollment-service rollout
-        run: kubectl rollout status deployment/enrollment-service -n production --timeout=300s
+        run: |
+          kubectl rollout status deployment/enrollment-service \
+            -n production \
+            --timeout=300s
+
+      # ---------------------------------------------------------
+      # Final Verification
+      # ---------------------------------------------------------
 
       - name: Show production resources
         run: |
+          echo "Production pods:"
           kubectl get pods -n production
+
+          echo "Production services:"
           kubectl get services -n production
+
+          echo "Production persistent volume claims:"
           kubectl get pvc -n production
+
+      - name: Final monitoring verification
+        run: |
+          echo "Prometheus and Grafana pods:"
+          kubectl get pods -n monitoring
+
+          echo "Prometheus and Grafana services:"
+          kubectl get services -n monitoring
