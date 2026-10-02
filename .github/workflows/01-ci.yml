@@ -110,10 +110,10 @@ jobs:
 
 
   # ---------------------------------------------------------
-  # Build and Push Docker Images
+  # Build, Security Scan and Push Docker Images
   # ---------------------------------------------------------
   build-and-push:
-    name: Build and Push Docker Images
+    name: Build, Scan and Push Docker Images
     runs-on: ubuntu-latest
     needs: backend-test
 
@@ -130,6 +130,10 @@ jobs:
         run: |
           az acr login --name ${{ vars.ACR_NAME }}
 
+
+      # -----------------------------------------------------
+      # Frontend
+      # -----------------------------------------------------
       - name: Build and Push Frontend
         run: |
           docker build \
@@ -139,15 +143,44 @@ jobs:
           docker push \
             ${{ vars.ACR_LOGIN_SERVER }}/koalatech-frontend:${{ github.sha }}
 
-      - name: Build and Push User Service
+
+      # -----------------------------------------------------
+      # User Service - Build
+      # -----------------------------------------------------
+      - name: Build User Service
         run: |
           docker build \
             -t ${{ vars.ACR_LOGIN_SERVER }}/koalatech-user-service:${{ github.sha }} \
             ./user-service
 
+
+      # -----------------------------------------------------
+      # Docker Scout Security Scan
+      # -----------------------------------------------------
+      - name: Docker Scout - CVEs and Recommendations
+        uses: docker/scout-action@v1
+        with:
+          command: cves,recommendations
+          image: local://${{ vars.ACR_LOGIN_SERVER }}/koalatech-user-service:${{ github.sha }}
+          dockerhub-user: ${{ secrets.DOCKERHUB_USERNAME }}
+          dockerhub-password: ${{ secrets.DOCKERHUB_TOKEN }}
+          only-severities: critical,high
+          summary: true
+          write-comment: false
+
+
+      # -----------------------------------------------------
+      # User Service - Push only after Scout scan
+      # -----------------------------------------------------
+      - name: Push User Service
+        run: |
           docker push \
             ${{ vars.ACR_LOGIN_SERVER }}/koalatech-user-service:${{ github.sha }}
 
+
+      # -----------------------------------------------------
+      # Student Service
+      # -----------------------------------------------------
       - name: Build and Push Student Service
         run: |
           docker build \
@@ -157,6 +190,10 @@ jobs:
           docker push \
             ${{ vars.ACR_LOGIN_SERVER }}/koalatech-student-service:${{ github.sha }}
 
+
+      # -----------------------------------------------------
+      # Lecturer Service
+      # -----------------------------------------------------
       - name: Build and Push Lecturer Service
         run: |
           docker build \
@@ -166,6 +203,10 @@ jobs:
           docker push \
             ${{ vars.ACR_LOGIN_SERVER }}/koalatech-lecturer-service:${{ github.sha }}
 
+
+      # -----------------------------------------------------
+      # Course Service
+      # -----------------------------------------------------
       - name: Build and Push Course Service
         run: |
           docker build \
@@ -175,6 +216,10 @@ jobs:
           docker push \
             ${{ vars.ACR_LOGIN_SERVER }}/koalatech-course-service:${{ github.sha }}
 
+
+      # -----------------------------------------------------
+      # Enrollment Service
+      # -----------------------------------------------------
       - name: Build and Push Enrollment Service
         run: |
           docker build \
