@@ -52,12 +52,21 @@ jobs:
 
     strategy:
       matrix:
-        service:
-          - user-service
-          - student-service
-          - lecturer-service
-          - course-service
-          - enrollment-service
+        include:
+          - service: user-service
+            database: users
+
+          - service: student-service
+            database: students
+
+          - service: lecturer-service
+            database: lecturers
+
+          - service: course-service
+            database: courses
+
+          - service: enrollment-service
+            database: enrollments
 
     services:
       postgres:
@@ -65,9 +74,9 @@ jobs:
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: testdb
+          POSTGRES_DB: ${{ matrix.database }}
         ports:
-          - 5433:5432
+          - 5432:5432
         options: >-
           --health-cmd="pg_isready -U postgres"
           --health-interval=10s
@@ -93,10 +102,10 @@ jobs:
         working-directory: ${{ matrix.service }}
         env:
           POSTGRES_HOST: localhost
-          POSTGRES_PORT: 5433
+          POSTGRES_PORT: 5432
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: testdb
+          POSTGRES_DB: ${{ matrix.database }}
         run: |
           pytest
 
