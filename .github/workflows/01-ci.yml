@@ -55,18 +55,23 @@ jobs:
         include:
           - service: user-service
             database: users
+            port: 5433
 
           - service: student-service
             database: students
+            port: 5434
 
           - service: lecturer-service
             database: lecturers
+            port: 5435
 
           - service: course-service
             database: courses
+            port: 5436
 
           - service: enrollment-service
             database: enrollments
+            port: 5437
 
     services:
       postgres:
@@ -76,7 +81,7 @@ jobs:
           POSTGRES_PASSWORD: postgres
           POSTGRES_DB: ${{ matrix.database }}
         ports:
-          - 5432:5432
+          - ${{ matrix.port }}:5432
         options: >-
           --health-cmd="pg_isready -U postgres"
           --health-interval=10s
@@ -100,12 +105,6 @@ jobs:
 
       - name: Run tests
         working-directory: ${{ matrix.service }}
-        env:
-          POSTGRES_HOST: localhost
-          POSTGRES_PORT: 5432
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: ${{ matrix.database }}
         run: |
           pytest
 
