@@ -3,7 +3,7 @@ name: 02 - Deploy to Staging
 on:
   workflow_run:
     workflows:
-      - "01 - CI"
+      - "CI"
     types:
       - completed
     branches:
